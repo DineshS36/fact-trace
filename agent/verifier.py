@@ -22,7 +22,7 @@ from typing import Any
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from .search_tools import extract_snippets, search_all_engines
+from .search_tools import extract_rich_metadata, extract_snippets, search_all_engines
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -52,6 +52,16 @@ class SourceEvidence(BaseModel):
     stance: str = Field(
         description="How this source relates to the claim: supports | refutes | neutral"
     )
+    highlighted_words: list[str] = Field(default_factory=list)
+
+
+class KnowledgeGraphEntity(BaseModel):
+    """Deep SerpApi knowledge graph entity if resolved."""
+
+    title: str = ""
+    type: str = ""
+    description: str = ""
+    source: str = ""
 
 
 class VerificationResult(BaseModel):
@@ -63,6 +73,9 @@ class VerificationResult(BaseModel):
     explanation: str
     evidence: list[SourceEvidence] = Field(default_factory=list)
     search_queries_used: list[str] = Field(default_factory=list)
+    engines_queried: list[str] = Field(default_factory=list)
+    knowledge_graph: KnowledgeGraphEntity | None = None
+    related_queries: list[str] = Field(default_factory=list)
 
 
 # ── LLM Client Factory ─────────────────────────────────────
@@ -236,11 +249,42 @@ class FactVerifier:
 
         # 2 & 3. Multi-engine search + snippet extraction
         all_snippets: list[dict] = []
+        raw_results_list: list[dict[str, Any]] = []
+        engines_used: set[str] = set()
+
         for query in queries:
             raw = search_all_engines(query, num_organic=self._max_snippets)
+            raw_results_list.append(raw)
+            for eng_name, eng_data in raw.items():
+                if isinstance(eng_data, dict) and "error" not in eng_data:
+                    engines_used.add(eng_name)
             all_snippets.extend(
                 extract_snippets(raw, max_per_engine=self._max_snippets)
             )
+
+        # Extract deep SerpApi metadata (knowledge graph, related questions)
+        kg_data = None
+        related_queries_list: list[str] = []
+        for raw in raw_results_list:
+            meta = extract_rich_metadata(raw)
+            if not kg_data and meta.get("knowledge_graph") and meta["knowledge_graph"].get("title"):
+                kg_dict = meta["knowledge_graph"]
+                kg_data = KnowledgeGraphEntity(
+                    title=kg_dict.get("title", ""),
+                    type=kg_dict.get("type", ""),
+                    description=kg_dict.get("description", ""),
+                    source=kg_dict.get("source", ""),
+                )
+            for rq in meta.get("related_queries", []):
+                if rq not in related_queries_list:
+                    related_queries_list.append(rq)
+
+        # Map URLs to highlight words
+        url_to_highlights: dict[str, list[str]] = {}
+        for s in all_snippets:
+            url = s.get("link", "")
+            if url and s.get("highlighted_words"):
+                url_to_highlights[url] = s.get("highlighted_words", [])
 
         # Deduplicate by URL
         seen_urls: set[str] = set()
@@ -258,9 +302,12 @@ class FactVerifier:
                 claim=claim,
                 verdict=Verdict.UNVERIFIABLE,
                 confidence_score=0.0,
-                explanation="No evidence could be retrieved for this claim.",
+                explanation="No reputable evidence could be retrieved for this claim.",
                 evidence=[],
                 search_queries_used=queries,
+                engines_queried=sorted(list(engines_used)),
+                knowledge_graph=kg_data,
+                related_queries=related_queries_list[:4],
             )
 
         # 4. LLM analysis
@@ -268,18 +315,34 @@ class FactVerifier:
         llm_response = _call_llm(_SYSTEM_PROMPT, user_prompt)
 
         # 5. Parse structured output
-        return self._parse_llm_response(claim, queries, llm_response)
+        return self._parse_llm_response(
+            claim=claim,
+            queries=queries,
+            raw_response=llm_response,
+            engines_queried=sorted(list(engines_used)),
+            knowledge_graph=kg_data,
+            related_queries=related_queries_list[:4],
+            url_to_highlights=url_to_highlights,
+        )
 
     def _parse_llm_response(
         self,
         claim: str,
         queries: list[str],
         raw_response: str,
+        engines_queried: list[str] | None = None,
+        knowledge_graph: KnowledgeGraphEntity | None = None,
+        related_queries: list[str] | None = None,
+        url_to_highlights: dict[str, list[str]] | None = None,
     ) -> VerificationResult:
         """
         Parse the LLM's JSON response into a VerificationResult.
         Falls back to UNVERIFIABLE if parsing fails.
         """
+        engines_queried = engines_queried or []
+        related_queries = related_queries or []
+        url_to_highlights = url_to_highlights or {}
+
         try:
             # Strip markdown code fences if the LLM wraps them
             cleaned = raw_response.strip()
@@ -298,6 +361,7 @@ class FactVerifier:
                     url=e.get("url", e.get("link", "")),
                     source_engine=e.get("source_engine", "unknown"),
                     stance=e.get("stance", "neutral"),
+                    highlighted_words=url_to_highlights.get(e.get("url", e.get("link", "")), []),
                 )
                 for e in data.get("evidence", [])
             ]
@@ -309,6 +373,9 @@ class FactVerifier:
                 explanation=data["explanation"],
                 evidence=evidence,
                 search_queries_used=queries,
+                engines_queried=engines_queried,
+                knowledge_graph=knowledge_graph,
+                related_queries=related_queries,
             )
 
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
@@ -320,4 +387,38 @@ class FactVerifier:
                 explanation=f"LLM analysis could not be parsed. Raw response: {raw_response[:300]}",
                 evidence=[],
                 search_queries_used=queries,
+                engines_queried=engines_queried,
+                knowledge_graph=knowledge_graph,
+                related_queries=related_queries,
             )
+
+
+def verify_claim(claim: str) -> dict[str, Any]:
+    """
+    Convenience function returning a clean dict representation
+    tailored for frontend and demo consumption.
+    """
+    verifier = FactVerifier()
+    res = verifier.verify(claim)
+
+    return {
+        "claim": res.claim,
+        "verdict": res.verdict.value,
+        "confidence": res.confidence_score,
+        "explanation": res.explanation,
+        "engines_queried": res.engines_queried,
+        "knowledge_graph": res.knowledge_graph.model_dump() if res.knowledge_graph else None,
+        "related_queries": res.related_queries,
+        "sources": [
+            {
+                "title": ev.title,
+                "snippet": ev.snippet,
+                "link": ev.url,
+                "engine": ev.source_engine,
+                "stance": ev.stance,
+                "highlighted_words": ev.highlighted_words,
+            }
+            for ev in res.evidence
+        ],
+        "search_queries_used": res.search_queries_used,
+    }
