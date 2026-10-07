@@ -70,7 +70,7 @@ class VerificationResult(BaseModel):
 _DEFAULT_MODELS = {
     "openai": "gpt-4o",
     "groq": "llama-3.3-70b-versatile",
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.5-flash-lite",
 }
 
 
@@ -123,6 +123,7 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
 
     if provider == "gemini":
         from google import genai
+        from google.genai import types
 
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
@@ -131,6 +132,10 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
         resp = client.models.generate_content(
             model=model,
             contents=f"{system_prompt}\n\n{user_prompt}",
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+            ),
         )
         return resp.text or ""
 
