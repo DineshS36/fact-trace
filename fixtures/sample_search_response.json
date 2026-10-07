@@ -1,0 +1,50 @@
+{
+  "organic": {
+    "search_metadata": {
+      "status": "Success",
+      "total_time_taken": 0.42
+    },
+    "organic_results": [
+      {
+        "position": 1,
+        "title": "Great Wall of China - Wikipedia",
+        "link": "https://en.wikipedia.org/wiki/Great_Wall_of_China",
+        "snippet": "The Great Wall of China is a series of fortifications that were built across the historical northern borders of ancient Chinese states."
+      },
+      {
+        "position": 2,
+        "title": "Can You See the Great Wall of China from Space? | NASA",
+        "link": "https://www.nasa.gov/vision/space/workinginspace/great_wall.html",
+        "snippet": "The Great Wall of China, frequently billed as the only man-made object visible from space, generally isn't visible from low Earth orbit without aid."
+      },
+      {
+        "position": 3,
+        "title": "Is the Great Wall of China Visible from Space? - Scientific American",
+        "link": "https://www.scientificamerican.com/article/is-chinas-great-wall-visible-from-space/",
+        "snippet": "Despite claims, the Great Wall is very difficult to see from space and is generally not visible to the unaided eye from orbit."
+      }
+    ]
+  },
+  "news": {
+    "news_results": [
+      {
+        "title": "Myths About the Great Wall of China Debunked",
+        "link": "https://example.com/news/great-wall-myths",
+        "snippet": "Experts continue to debunk the popular myth that the Great Wall is visible from space, calling it one of history's most persistent misconceptions.",
+        "date": "2024-08-15"
+      }
+    ]
+  },
+  "scholar": {
+    "organic_results": [
+      {
+        "title": "Visibility of the Great Wall from Space: An Optical Analysis",
+        "link": "https://example.com/scholar/great-wall-optical",
+        "snippet": "Our analysis concludes that the Great Wall's width of approximately 5 metres makes it imperceptible to the naked eye from low-Earth orbit.",
+        "publication_info": {
+          "summary": "Journal of Remote Sensing, Vol 42, 2023"
+        }
+      }
+    ]
+  }
+}
