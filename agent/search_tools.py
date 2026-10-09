@@ -10,6 +10,7 @@ All calls route through the cache layer — zero credit burn during dev.
 
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from .cache import execute_search
 
@@ -45,31 +46,43 @@ def search_scholar(query: str) -> dict[str, Any]:
 # ── Aggregated Multi-Engine Search ──────────────────────────
 
 
-def search_all_engines(query: str, num_organic: int = 5) -> dict[str, Any]:
+def search_all_engines(
+    query: str,
+    engines_to_query: list[str] | None = None,
+    num_organic: int = 5,
+) -> dict[str, Any]:
     """
-    Run the query against all three engines and return a unified
-    evidence bundle.
-
-    Returns:
-        {
-            "organic": { ... },
-            "news":    { ... },
-            "scholar": { ... },
-        }
-
-    Each value is the raw SerpApi response dict for that engine.
-    Failures on individual engines are captured as error strings
-    rather than crashing the whole pipeline.
+    Run the query against selected engines and return an evidence bundle.
+    If engines_to_query is None, queries all engines ("organic", "news", "scholar").
     """
     results: dict[str, Any] = {}
 
-    engines = [
-        ("organic", lambda: search_organic(query, num=num_organic)),
-        ("news", lambda: search_news(query)),
-        ("scholar", lambda: search_scholar(query)),
-    ]
+    available = {
+        "organic": lambda: search_organic(query, num=num_organic),
+        "google": lambda: search_organic(query, num=num_organic),
+        "news": lambda: search_news(query),
+        "google_news": lambda: search_news(query),
+        "scholar": lambda: search_scholar(query),
+        "google_scholar": lambda: search_scholar(query),
+    }
 
-    for name, fetch in engines:
+    # Normalize target engine names
+    targets = engines_to_query or ["organic", "news", "scholar"]
+    chosen_engines = set()
+    for t in targets:
+        normalized = t.lower()
+        if normalized in ("organic", "google"):
+            chosen_engines.add("organic")
+        elif normalized in ("news", "google_news"):
+            chosen_engines.add("news")
+        elif normalized in ("scholar", "google_scholar"):
+            chosen_engines.add("scholar")
+
+    if not chosen_engines:
+        chosen_engines = {"organic"}
+
+    for name in chosen_engines:
+        fetch = available[name]
         try:
             results[name] = fetch()
         except Exception as exc:
@@ -79,8 +92,9 @@ def search_all_engines(query: str, num_organic: int = 5) -> dict[str, Any]:
     return results
 
 
-# ── Domain Authority Filter ─────────────────────────────────
+# ── Tiered Domain Authority Filter ──────────────────────────
 
+# Social forum & low-signal domains to drop completely
 BANNED_DOMAINS = {
     "facebook.com",
     "instagram.com",
@@ -92,18 +106,76 @@ BANNED_DOMAINS = {
     "x.com",
 }
 
+# Explicitly elevated authority clusters
+TIER_1_DOMAINS = {
+    # Government & Scientific Indexers
+    "nih.gov", "ncbi.nlm.nih.gov", "cdc.gov", "fda.gov", "who.int", "nature.com",
+    "sciencedirect.com", "thelancet.com", "jamanetwork.com", "cell.com", "arxiv.org",
+    # Primary News Wires & Financial Records
+    "reuters.com", "apnews.com", "bloomberg.com", "sec.gov", "nasa.gov", "weather.gov"
+}
+
+TIER_2_DOMAINS = {
+    "bbc.com", "nytimes.com", "washingtonpost.com", "wsj.com", "theguardian.com",
+    "thehindu.com", "economist.com", "ft.com", "scientificamerican.com"
+}
+
+
+def calculate_domain_authority(url: str, is_scholar: bool = False) -> tuple[int, str]:
+    """Returns (tier_score: 1-3, label: 'High' | 'Medium' | 'Low')."""
+    if not url:
+        if is_scholar:
+            return (1, "Tier-1 Authoritative (Peer-Reviewed Scholar)")
+        return (3, "Standard Web")
+
+    try:
+        domain = urlparse(url).netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        if ":" in domain:
+            domain = domain.split(":")[0]
+    except Exception:
+        domain = ""
+
+    if (
+        any(domain.endswith(t1) or domain == t1 for t1 in TIER_1_DOMAINS)
+        or domain.endswith(".gov")
+        or domain.endswith(".edu")
+        or is_scholar
+    ):
+        label = (
+            "Tier-1 Authoritative (Peer-Reviewed Scholar)"
+            if is_scholar and not any(domain.endswith(t1) or domain == t1 for t1 in TIER_1_DOMAINS) and not (domain.endswith(".gov") or domain.endswith(".edu"))
+            else "Tier-1 Authoritative (Gov/Academia/Wire)"
+        )
+        return (1, label)
+    elif any(domain.endswith(t2) or domain == t2 for t2 in TIER_2_DOMAINS):
+        return (2, "Tier-2 Reputable (Major Institutional Press)")
+    return (3, "Standard Web")
+
+
+def filter_and_rank_sources(results: list[dict], top_k: int = 5, is_scholar: bool = False) -> list[dict]:
+    """Sorts results so high-authority domains are prioritized at the top of context."""
+    valid_results = []
+    for r in results:
+        link = r.get("link", "")
+        # Drop social/forum noise
+        if any(banned in link.lower() for banned in BANNED_DOMAINS):
+            continue
+        tier, label = calculate_domain_authority(link, is_scholar=is_scholar)
+        r_copy = dict(r)
+        r_copy["authority_tier"] = tier
+        r_copy["authority_label"] = label
+        valid_results.append(r_copy)
+
+    # Sort primarily by Tier (Tier 1 first), secondarily keeping original relevance
+    valid_results.sort(key=lambda x: x["authority_tier"])
+    return valid_results[:top_k]
+
 
 def filter_reputable_sources(results: list[dict], max_sources: int = 5) -> list[dict]:
-    """Filter out low-signal/social forum domains and drop noisy sources."""
-    curated = []
-    for item in results:
-        link = (item.get("link") or "").lower()
-        if any(banned in link for banned in BANNED_DOMAINS):
-            continue
-        curated.append(item)
-        if len(curated) >= max_sources:
-            break
-    return curated
+    """Filter out low-signal/social forum domains and drop noisy sources (backward-compatible wrapper)."""
+    return filter_and_rank_sources(results, top_k=max_sources)
 
 
 # ── Evidence Extraction Helpers ─────────────────────────────
@@ -145,15 +217,17 @@ def extract_rich_metadata(raw_results: dict[str, Any]) -> dict[str, Any]:
 def extract_snippets(raw_results: dict[str, Any], max_per_engine: int = 5) -> list[dict]:
     """
     Flatten multi-engine results into a curated list of evidence snippets
-    filtered for domain authority and enriched with SerpApi metadata.
+    filtered for domain authority and enriched with SerpApi date, highlights, and source.
+    High-authority sources (Tier 1/2) are ranked first.
     """
     snippets: list[dict] = []
 
-    # Organic results (filtered)
+    # Organic results (filtered & ranked by authority)
     organic = raw_results.get("organic", {})
-    organic_items = filter_reputable_sources(
+    organic_items = filter_and_rank_sources(
         organic.get("organic_results", []),
-        max_sources=max_per_engine
+        top_k=max_per_engine,
+        is_scholar=False,
     )
     for item in organic_items:
         snippets.append({
@@ -161,14 +235,19 @@ def extract_snippets(raw_results: dict[str, Any], max_per_engine: int = 5) -> li
             "title": item.get("title", ""),
             "snippet": item.get("snippet", ""),
             "link": item.get("link", ""),
+            "date": item.get("date", "Unknown date"),
+            "source_domain": item.get("displayed_link", item.get("source", "")),
+            "authority_tier": item.get("authority_tier", 3),
+            "authority_label": item.get("authority_label", "Standard Web"),
             "highlighted_words": item.get("snippet_highlighted_words", []),
         })
 
-    # News results (filtered)
+    # News results (filtered & ranked by authority)
     news = raw_results.get("news", {})
-    news_items = filter_reputable_sources(
+    news_items = filter_and_rank_sources(
         news.get("news_results", []),
-        max_sources=max_per_engine
+        top_k=max_per_engine,
+        is_scholar=False,
     )
     for item in news_items:
         snippets.append({
@@ -176,21 +255,32 @@ def extract_snippets(raw_results: dict[str, Any], max_per_engine: int = 5) -> li
             "title": item.get("title", ""),
             "snippet": item.get("snippet", ""),
             "link": item.get("link", ""),
+            "date": item.get("date", "Recent"),
+            "source_domain": item.get("source", {}).get("name", "") if isinstance(item.get("source"), dict) else item.get("source", ""),
+            "authority_tier": item.get("authority_tier", 3),
+            "authority_label": item.get("authority_label", "Standard Web"),
             "highlighted_words": item.get("snippet_highlighted_words", []),
         })
 
-    # Scholar results (peer-reviewed / academic)
+    # Scholar results (peer-reviewed / academic, elevated as Tier-1 authority)
     scholar = raw_results.get("scholar", {})
-    scholar_items = filter_reputable_sources(
+    scholar_items = filter_and_rank_sources(
         scholar.get("organic_results", []),
-        max_sources=max_per_engine
+        top_k=max_per_engine,
+        is_scholar=True,
     )
     for item in scholar_items:
+        pub_info = item.get("publication_info", {})
+        pub_summary = pub_info.get("summary", "") if isinstance(pub_info, dict) else ""
         snippets.append({
             "source_engine": "google_scholar",
             "title": item.get("title", ""),
-            "snippet": item.get("snippet", item.get("publication_info", {}).get("summary", "")),
+            "snippet": item.get("snippet", pub_summary),
             "link": item.get("link", ""),
+            "date": pub_summary if pub_summary else "Peer-reviewed",
+            "source_domain": "Google Scholar / Academic",
+            "authority_tier": item.get("authority_tier", 1),
+            "authority_label": item.get("authority_label", "Tier-1 Authoritative (Peer-Reviewed Scholar)"),
             "highlighted_words": item.get("snippet_highlighted_words", []),
         })
 
