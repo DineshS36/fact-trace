@@ -1,9 +1,10 @@
 """
-FactTrace — Epistemic Audit Agent Dashboard
-===========================================
-High-density Streamlit UI demonstrating multi-engine corroboration
-powered by SerpApi and Gemini with deep entity extraction, tiered domain
-authority ranking, grounded AI Overviews, and interactive follow-up investigations.
+FactTrace — Epistemic Audit Multi-Agent Dashboard
+=================================================
+High-density Streamlit UI demonstrating an autonomous 4-stage Multi-Agent
+architecture (Planner ➔ Retrieval ➔ Critic ➔ Synthesis) powered by
+SerpApi and Gemini with semantic relevance gating, CAPTCHA purging,
+and grounded inline citations.
 """
 
 import logging
@@ -22,7 +23,7 @@ logging.basicConfig(
 )
 
 st.set_page_config(
-    page_title="FactTrace | Epistemic Audit Agent",
+    page_title="FactTrace | Multi-Agent Epistemic Audit",
     page_icon="🛡️",
     layout="wide",
 )
@@ -36,18 +37,33 @@ st.markdown(
         background: rgba(255, 255, 255, 0.03);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 10px;
-        padding: 1rem;
+        padding: 0.8rem 1rem;
         margin-bottom: 0.8rem;
     }
     .entity-pill {
         display: inline-block;
         background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
         color: white;
-        padding: 0.3rem 0.8rem;
+        padding: 0.25rem 0.75rem;
         border-radius: 20px;
-        font-size: 0.85rem;
+        font-size: 0.82rem;
         font-weight: 600;
-        margin-bottom: 0.6rem;
+        margin-bottom: 0.5rem;
+    }
+    .agent-pipeline-bar {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+    }
+    .agent-step {
+        background: rgba(99, 102, 241, 0.1);
+        border: 1px solid rgba(99, 102, 241, 0.3);
+        color: #a5b4fc;
+        padding: 0.3rem 0.7rem;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        font-weight: 600;
     }
     .kw-tag {
         display: inline-block;
@@ -69,11 +85,21 @@ st.markdown(
     }
     .ai-overview-container {
         background: rgba(255, 255, 255, 0.02);
-        border: 1px solid rgba(99, 102, 241, 0.2);
+        border: 1px solid rgba(99, 102, 241, 0.25);
         border-radius: 12px;
         padding: 1.2rem;
         line-height: 1.6;
         margin-bottom: 1rem;
+    }
+    .critic-badge {
+        display: inline-block;
+        background: rgba(245, 158, 11, 0.15);
+        color: #fbbf24;
+        border: 1px solid rgba(245, 158, 11, 0.3);
+        padding: 0.2rem 0.6rem;
+        border-radius: 4px;
+        font-size: 0.8rem;
+        margin-bottom: 0.6rem;
     }
     .followup-box {
         background: rgba(99, 102, 241, 0.05);
@@ -96,71 +122,100 @@ if "current_result" not in st.session_state:
     st.session_state.current_result = None
 
 benchmarks = {
+    "void": "is the void will kill us what happened when it touch our earth",
     "creatine": "High-dose creatine supplementation directly causes hair loss in healthy athletes.",
     "sora": "OpenAI launched Sora publicly to all free users in early 2024.",
     "space_pen": "NASA spent millions developing a space pen while the Soviets just used a pencil.",
 }
 
 if "input_claim" not in st.session_state:
-    st.session_state["input_claim"] = benchmarks["creatine"]
+    st.session_state["input_claim"] = benchmarks["void"]
 
 # ── Header ──────────────────────────────────────────────────
 
 col_title, col_stats = st.columns([3, 1])
 with col_title:
-    st.title("🛡️ FactTrace: Epistemic Audit Agent")
-    st.caption("Google AI Mode Epistemic Corroboration Engine powered by SerpApi & Gemini")
+    st.title("🛡️ FactTrace: Epistemic Multi-Agent")
+    st.caption("Autonomous 4-Agent Pipeline: Planner ➔ Retrieval ➔ Epistemic Critic ➔ Synthesis")
 with col_stats:
     stats = cache_stats()
     st.markdown(
         f"""
-        <div class="metric-card" style="text-align: right; padding: 0.6rem 1rem;">
-            <div style="font-size: 0.8rem; color: #94a3b8;">Zero-Burn Cache</div>
+        <div class="metric-card" style="text-align: right;">
+            <div style="font-size: 0.75rem; color: #94a3b8;">Zero-Burn Cache</div>
             <div style="font-weight: 700; font-size: 1.1rem; color: #10b981;">{stats['entries']} hits stored</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+# ── Multi-Agent Architecture Bar ────────────────────────────
+
+st.markdown(
+    """
+    <div class="agent-pipeline-bar">
+        <div class="agent-step">1️⃣ Planner Agent (Decomposition & DAG)</div>
+        <div class="agent-step">2️⃣ Retrieval Agent (Cached SerpApi)</div>
+        <div class="agent-step">3️⃣ Critic Agent (Relevance Gate & CAPTCHA Purge)</div>
+        <div class="agent-step">4️⃣ Synthesis Agent (AI Overview & [1] Citations)</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 # ── Benchmark Prompts ───────────────────────────────────────
 
 st.markdown("##### ⚡ Benchmark Demonstration Claims")
-b1, b2, b3 = st.columns(3)
+b1, b2, b3, b4 = st.columns(4)
 
 with b1:
+    if st.button("🌌 Test Query: False Vacuum Decay", use_container_width=True):
+        st.session_state["input_claim"] = benchmarks["void"]
+        st.session_state.current_result = None
+        st.session_state.audit_history = []
+        st.rerun()
+with b2:
     if st.button("🔬 Optimal Demo: Creatine & Hair Loss", use_container_width=True):
         st.session_state["input_claim"] = benchmarks["creatine"]
         st.session_state.current_result = None
         st.session_state.audit_history = []
         st.rerun()
-with b2:
+with b3:
     if st.button("⏱️ Temporal: OpenAI Sora 2024", use_container_width=True):
         st.session_state["input_claim"] = benchmarks["sora"]
         st.session_state.current_result = None
         st.session_state.audit_history = []
         st.rerun()
-with b3:
+with b4:
     if st.button("🚀 Attribution: NASA Space Pen", use_container_width=True):
         st.session_state["input_claim"] = benchmarks["space_pen"]
         st.session_state.current_result = None
         st.session_state.audit_history = []
         st.rerun()
 
-# ── Input Area ──────────────────────────────────────────────
+# ── Input Area & Credit Mode ────────────────────────────────
 
 claim = st.text_input(
     "Enter a claim to investigate:",
     value=st.session_state["input_claim"],
-    placeholder="e.g., High-dose creatine supplementation directly causes hair loss in healthy athletes.",
+    placeholder="e.g., is the void will kill us what happened when it touch our earth",
 )
 
-col_btn, _ = st.columns([1, 4])
-with col_btn:
-    run_audit = st.button("Run Epistemic Audit", type="primary", use_container_width=True)
+col_ctrl1, col_ctrl2 = st.columns([1.5, 3.5])
+with col_ctrl1:
+    credit_mode_choice = st.radio(
+        "SerpApi Execution Budget:",
+        options=["⚡ Balanced (Strictly 3 Credits)", "🔬 Deep Multi-Surface (6 Credits)"],
+        horizontal=True,
+    )
+    mode_slug = "balanced" if "3 Credits" in credit_mode_choice else "deep"
+
+with col_ctrl2:
+    run_audit = st.button("Run Epistemic Multi-Agent Audit", type="primary", use_container_width=False)
 
 if run_audit and claim.strip():
-    with st.spinner("Decomposing queries with search operators, dispatching multi-engine searches & auditing evidence..."):
-        result = verify_claim(claim.strip())
+    with st.spinner("Executing Multi-Agent Pipeline: Planning ➔ Retrieving ➔ Purging Noise ➔ Synthesizing Overview..."):
+        result = verify_claim(claim.strip(), credit_mode=mode_slug)
         st.session_state.current_result = result
         st.session_state.audit_history = []
 elif run_audit:
@@ -190,16 +245,31 @@ if result:
 
         engines = result.get("engines_queried", [])
         if engines:
-            st.caption(f"**Engines Corroborated:** {', '.join(engines)}")
+            st.caption(f"**Engines Corroborated:** {', '.join(engines)} (Mode: `{result.get('credit_mode', 'balanced')}`)")
 
-        # Targeted queries used by search planner
+        # Critic Agent Purge Stats
+        purged_count = result.get("purged_sources_count", 0)
+        st.markdown(
+            f"""<div class="critic-badge">🛡️ Critic Agent: Purged {purged_count} off-topic/CAPTCHA items</div>""",
+            unsafe_allow_html=True,
+        )
+
+        # Core Concepts identified by Planner
+        concepts = result.get("core_concepts", [])
+        if concepts:
+            st.markdown("**Gated Concepts:** " + " ".join([f'<span class="kw-tag">{c}</span>' for c in concepts]), unsafe_allow_html=True)
+
+        # 3 Distinct Search Operator Queries (Verified Unconcatenated)
         planner_queries = result.get("search_queries_used", [])
         if planner_queries:
-            with st.expander("🔍 Injected Search Operators"):
-                for q in planner_queries:
+            with st.expander(f"🔍 Planner Agent: {len(planner_queries)} Isolated Queries"):
+                labels = ["Academic Primary", "Consensus Meta", "Counter-Hypothesis / Myth"]
+                for i, q in enumerate(planner_queries):
+                    label = labels[i] if i < len(labels) else f"Query {i+1}"
+                    st.caption(f"**Query {i+1} ({label}):**")
                     st.code(q, language="text")
 
-        # Knowledge Graph deep field display
+        # Knowledge Graph
         kg = result.get("knowledge_graph")
         if kg and kg.get("title"):
             st.markdown(
@@ -222,14 +292,14 @@ if result:
 
         if result.get("consensus_summary"):
             st.markdown(
-                f"""<div class="consensus-card"><strong>📌 Consensus:</strong> {result['consensus_summary']}</div>""",
+                f"""<div class="consensus-card"><strong>📌 Empirical Consensus:</strong> {result['consensus_summary']}</div>""",
                 unsafe_allow_html=True,
             )
 
         if result.get("divergence_detected"):
             st.warning(f"⚠️ **Source Divergence Detected:** {result.get('divergence_notes')}")
 
-        # Related investigation angles from SerpApi
+        # Related investigation angles
         related = result.get("related_queries", [])
         if related:
             st.markdown("**Related Investigation Angles:**")
@@ -239,12 +309,12 @@ if result:
     st.divider()
 
     # ── Grounded Evidence Matrix ────────────────────────────
-    st.markdown("### 📚 Grounded Evidence Matrix")
-    st.caption("Ranked by Tier-1/2 Domain Authority (.gov, .edu, Nature, wires elevated; social/forums dropped) & annotated with bracketed citations.")
+    st.markdown("### 📚 Grounded Evidence Matrix (Critic-Audited)")
+    st.caption("Purged of scraper traps, CAPTCHAs, journal ads, and off-topic .gov pages. Ranked via Hybrid Score (70% Topical Relevance + 30% Domain Authority).")
 
     sources = result.get("sources", [])
     if not sources:
-        st.info("No primary sources qualified under the domain authority filter.")
+        st.info("No primary sources qualified under topical relevance gating and domain authority filtering.")
     else:
         for idx, src in enumerate(sources, 1):
             tier = src.get("authority_tier", 3)
@@ -260,18 +330,21 @@ if result:
             engine_name = src.get("engine", "google")
             pub_date = src.get("date", "N/A")
             domain_name = src.get("domain", "")
+            rel_score = src.get("relevance_score", 0.0)
 
-            with st.expander(f"[{idx}] {status_icon} {src.get('title', 'Source')} — {tier_badge}"):
+            with st.expander(f"[{src.get('index', idx)}] {status_icon} {src.get('title', 'Source')} — {tier_badge}"):
                 domain_str = f" | Domain: `{domain_name}`" if domain_name else ""
                 st.write(f"**Authority:** {src.get('authority_label', 'Standard')}")
-                st.caption(f"Engine: `{engine_name}` | Published: {pub_date}{domain_str} | Stance: `{stance.capitalize()}`")
+                st.caption(
+                    f"Engine: `{engine_name}` | Published: {pub_date}{domain_str} | "
+                    f"Stance: `{stance.capitalize()}` | Relevance: `{rel_score*100:.0f}%`"
+                )
                 st.write(f"**Verified Excerpt:** {src.get('snippet')}")
 
-                # Highlighted words deep field
                 hw = src.get("highlights") or src.get("highlighted_words", [])
                 if hw:
                     kw_html = " ".join([f'<span class="kw-tag">{w}</span>' for w in hw[:5]])
-                    st.markdown(f"**SerpApi Highlight Matches:** {kw_html}", unsafe_allow_html=True)
+                    st.markdown(f"**SerpApi Matches:** {kw_html}", unsafe_allow_html=True)
 
                 st.markdown(f"🔗 [Inspect Raw URL]({src.get('link')})")
 
@@ -305,14 +378,14 @@ if result:
                     with st.expander(f"Inspect {len(turn['sources'])} Follow-up Grounding Sources"):
                         for f_idx, f_src in enumerate(turn["sources"], 1):
                             st.markdown(
-                                f"**[{f_idx}] {f_src.get('title')}** ({f_src.get('authority_label')})\n\n"
+                                f"**[{f_src.get('index', f_idx)}] {f_src.get('title')}** ({f_src.get('authority_label')})\n\n"
                                 f"*{f_src.get('snippet')}*\n\n"
                                 f"[Inspect Link]({f_src.get('link')})\n"
                             )
 
     # ── Google AI Mode Follow-up Bar ────────────────────────
     st.divider()
-    follow_up = st.chat_input("Ask a follow-up or challenge this audit (e.g. 'What about the 2009 rugby study?')...")
+    follow_up = st.chat_input("Ask a follow-up or challenge this audit (e.g. 'Could cosmic voids collide with Earth?')...")
     if follow_up:
         with st.spinner(f"Investigating follow-up: '{follow_up}' in context of previous audit..."):
             follow_up_res = verify_follow_up(
