@@ -13,7 +13,8 @@ import re
 from typing import Any
 from pydantic import BaseModel, Field
 
-from .llm_client import call_llm
+from .llm_client import call_llm, clean_llm_json
+from .search_tools import POP_CULTURE_KEYWORDS, select_engines
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,10 @@ class Plan(BaseModel):
 def classify_claim_type_heuristic(claim: str) -> str:
     """Fast keyword fallback for claim categorization."""
     c = claim.lower()
+
+    if any(k in c for k in POP_CULTURE_KEYWORDS) or any(k in c for k in ENTERTAINMENT_MARKERS):
+        return "entertainment_media"
+
     if any(k in c for k in [
         "creatine", "supplement", "dose", "protein", "health", "cancer", "vaccine",
         "disease", "clinical", "optical", "scientific", "physics", "chemical", "celsius",
@@ -61,7 +66,7 @@ def classify_claim_type_heuristic(claim: str) -> str:
         "launched", "released", "announced", "2024", "2025", "2026", "yesterday",
         "last month", "recently", "sora", "openai", "acquisition", "died", "resigned",
         "war", "election", "bose", "crash"
-    ] + TEMPORAL_MARKERS + ENTERTAINMENT_MARKERS):
+    ] + TEMPORAL_MARKERS):
         return "temporal_news"
 
     if any(k in c for k in ["pricing", "cost", "features", "saas", "api", "subscription"]):
@@ -102,13 +107,13 @@ class PlannerAgent:
 
         temporal_instruction = ""
         if is_temporal or is_entertainment:
-            temporal_instruction = """
-SPECIAL TEMPORAL / ENTERTAINMENT RULE:
-This query asks about ongoing serialized media, daily plot developments, or real-time events.
-- Do NOT restrict queries to site:wikipedia.org (which only hosts static cast tables).
-- Route queries toward episode recaps, character plot developments, or entertainment databases:
-  e.g. "{claim} today episode recap supporting character"
-  e.g. "{claim} full cast characters"
+            temporal_instruction = f"""
+SPECIAL ENTERTAINMENT & REGIONAL RECENCY RULES:
+The query asks about daily TV serials, soap operas, or ongoing entertainment plots:
+- NEVER use corporate streaming portal site operators like site:sunnetwork.in, site:hotstar.com, or site:wikipedia.org (they only host static corporate landing pages or tables, not daily plot summaries).
+- Query 1: Use recap keywords: "{claim} written update today episode recap"
+- Query 2: Target entertainment portals: "{claim} plot summary latest episode"
+- Query 3: Search character dynamics: "{claim} cast characters helping"
 """
 
         prompt = f"""You are the Planner Agent in an Epistemic Fact-Verification system.
@@ -122,9 +127,9 @@ TASK:
 1. Classify the claim type ("scientific" | "temporal_news" | "commercial_saas" | "general_factoid").
 2. Identify 3 to 5 core conceptual terms or entities crucial for topic relevance.
 3. Generate EXACTLY 3 distinct, non-overlapping Google search queries:
-   - Query 1 (Primary Authority / Direct Entity): Targeted terminology or official record.
+   - Query 1 (Primary Authority / Direct Entity / Recap): Targeted terminology, official record, or episode recap.
    - Query 2 (Consensus / Synthesis / Recap): Consensus phrasing or episode/development recap.
-   - Query 3 (Counter-Hypothesis / Myth Origin): Origin of misconception, debunking, or counter-evidence.
+   - Query 3 (Counter-Hypothesis / Myth Origin): Origin of misconception, debunking, or character dynamics.
 
 IMPORTANT CONSTRAINTS:
 - Do NOT output a single concatenated query.
@@ -143,15 +148,15 @@ IMPORTANT CONSTRAINTS:
 
         try:
             response = call_llm(prompt, response_mime_type="application/json")
-            cleaned = response.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1]
-            if cleaned.endswith("```"):
-                cleaned = cleaned.rsplit("```", 1)[0]
-            data = json.loads(cleaned.strip())
+            data = clean_llm_json(response)
+            if not isinstance(data, dict):
+                data = {}
 
             claim_type = str(data.get("claim_type", heuristic_type)).lower()
-            if is_temporal or is_entertainment:
+            is_pop_culture = any(k in c_lower for k in POP_CULTURE_KEYWORDS)
+            if is_pop_culture or is_entertainment:
+                claim_type = "entertainment_media"
+            elif is_temporal:
                 claim_type = "temporal_news"
 
             raw_concepts = data.get("core_concepts", [])
@@ -166,9 +171,11 @@ IMPORTANT CONSTRAINTS:
             if isinstance(raw_queries, list):
                 for q in raw_queries:
                     q_str = str(q).strip().replace("\n", " ")
-                    # Guard against Wikipedia lock on real-time queries
-                    if (is_temporal or is_entertainment) and "site:wikipedia.org" in q_str:
-                        q_str = q_str.replace("site:wikipedia.org", "").strip()
+                    # Guard against corporate portal locks on real-time queries
+                    if is_temporal or is_entertainment or is_pop_culture:
+                        for blocked_op in ("site:wikipedia.org", "site:sunnetwork.in", "site:hotstar.com", "site:sunnxt.net"):
+                            if blocked_op in q_str:
+                                q_str = q_str.replace(blocked_op, "").strip()
 
                     # Guard against query concatenation bug
                     if len(q_str) > 130 and "site:" in q_str:
@@ -187,7 +194,7 @@ IMPORTANT CONSTRAINTS:
                     break
 
             if not valid_queries:
-                if is_temporal or is_entertainment:
+                if is_temporal or is_entertainment or is_pop_culture:
                     valid_queries = [
                         f"{' '.join(core_concepts[:3])} latest episode recap",
                         f"{' '.join(core_concepts[:3])} character cast details",
@@ -200,11 +207,13 @@ IMPORTANT CONSTRAINTS:
                         f"{' '.join(core_concepts[:3])} debunked myth origin",
                     ]
 
-            # Determine target surfaces
-            if is_temporal or is_entertainment or claim_type in ("temporal_news", "commercial_saas"):
+            # Determine target surfaces (strictly suppress scholar for pop culture/media)
+            if is_pop_culture or is_entertainment or claim_type in ("entertainment_media", "temporal_news", "commercial_saas"):
                 surfaces = ["google", "google_news"]
-            else:
+            elif claim_type == "scientific":
                 surfaces = ["google", "google_scholar"]
+            else:
+                surfaces = select_engines(claim)
 
             return Plan(
                 claim=claim,

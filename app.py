@@ -123,14 +123,14 @@ if "current_result" not in st.session_state:
     st.session_state.current_result = None
 
 benchmarks = {
-    "kayal": "who is helping Kayal right now in Sun TV serial",
-    "void": "is the void will kill us what happened when it touch our earth",
     "creatine": "High-dose creatine supplementation directly causes hair loss in healthy athletes.",
+    "void": "is the void will kill us what happened when it touch our earth",
     "sora": "OpenAI launched Sora publicly to all free users in early 2024.",
+    "kayal": "who is helping Kayal right now in Sun TV serial",
 }
 
 if "input_claim" not in st.session_state:
-    st.session_state["input_claim"] = benchmarks["kayal"]
+    st.session_state["input_claim"] = benchmarks["creatine"]
 
 # ── Header ──────────────────────────────────────────────────
 
@@ -170,8 +170,8 @@ st.markdown("##### ⚡ Benchmark Demonstration Claims")
 b1, b2, b3, b4 = st.columns(4)
 
 with b1:
-    if st.button("📺 Serial: Kayal Sun TV Current Plot", use_container_width=True):
-        st.session_state["input_claim"] = benchmarks["kayal"]
+    if st.button("🔬 Biomedical: Creatine & Hair Loss", use_container_width=True):
+        st.session_state["input_claim"] = benchmarks["creatine"]
         st.session_state.current_result = None
         st.session_state.audit_history = []
         st.rerun()
@@ -182,14 +182,14 @@ with b2:
         st.session_state.audit_history = []
         st.rerun()
 with b3:
-    if st.button("🔬 Optimal: Creatine & Hair Loss", use_container_width=True):
-        st.session_state["input_claim"] = benchmarks["creatine"]
+    if st.button("⏱️ Temporal: OpenAI Sora 2024", use_container_width=True):
+        st.session_state["input_claim"] = benchmarks["sora"]
         st.session_state.current_result = None
         st.session_state.audit_history = []
         st.rerun()
 with b4:
-    if st.button("⏱️ Temporal: OpenAI Sora 2024", use_container_width=True):
-        st.session_state["input_claim"] = benchmarks["sora"]
+    if st.button("📺 Real-Time TV: Kayal Sun TV Recap", use_container_width=True):
+        st.session_state["input_claim"] = benchmarks["kayal"]
         st.session_state.current_result = None
         st.session_state.audit_history = []
         st.rerun()
@@ -321,6 +321,11 @@ if result:
 
     st.divider()
 
+    # ── SerpApi Native Google AI Overview Callout ───────────
+    serp_overview = result.get("serpapi_ai_overview")
+    if serp_overview:
+        st.info(f"✨ **SerpApi Native Google AI Overview Detected:** {serp_overview}")
+
     # ── Grounded Evidence Matrix ────────────────────────────
     st.markdown("### 📚 Grounded Evidence Matrix (Critic-Audited)")
     st.caption("Clean host domains, duplicate-capped (max 2/domain), and ranked via Hybrid Score (70% Topical Relevance + 30% Domain Authority).")
@@ -379,6 +384,8 @@ if result:
             md += f"**Verdict:** {res['verdict']} | **Confidence:** {res['confidence']*100:.1f}%\n\n"
             if res.get("consensus_summary"):
                 md += f"**Empirical Consensus:** {res['consensus_summary']}\n\n"
+            if res.get("serpapi_ai_overview"):
+                md += f"## SerpApi Native Google AI Overview\n{res['serpapi_ai_overview']}\n\n"
             md += f"## Executive Analysis\n{res['executive_overview']}\n\n"
             md += f"## Evidence Citations\n"
             for i, s in enumerate(res.get('sources', []), 1):

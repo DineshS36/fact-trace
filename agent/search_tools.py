@@ -9,6 +9,7 @@ All calls route through the cache layer — zero credit burn during dev.
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import urlparse
 
@@ -92,6 +93,73 @@ def search_all_engines(
     return results
 
 
+# ── Parallel Search Dispatcher ──────────────────────────────
+
+
+def dispatch_searches_parallel(queries: list[str], engines: list[str], num: int = 5) -> list[dict]:
+    """Fires all planner queries across selected engines in parallel threads."""
+    tasks = []
+    for q in queries:
+        for engine in engines:
+            tasks.append({"engine": engine, "q": q, "num": num})
+
+    raw_results = []
+    if not tasks:
+        return raw_results
+
+    with ThreadPoolExecutor(max_workers=min(len(tasks), 8)) as executor:
+        future_to_task = {
+            executor.submit(execute_search, task): task for task in tasks
+        }
+        for future in as_completed(future_to_task):
+            task_info = future_to_task[future]
+            try:
+                data = future.result()
+                raw_results.append({
+                    "engine": task_info["engine"],
+                    "query": task_info["q"],
+                    "data": data,
+                })
+            except Exception as e:
+                logger.warning("Parallel search failed for %s query '%s': %s", task_info["engine"], task_info["q"], e)
+                continue
+
+    return raw_results
+
+
+# ── Engine Selection & Category Heuristics ──────────────────
+
+POP_CULTURE_KEYWORDS = {
+    "anime", "manga", "series", "character", "actor", "actress", 
+    "movie", "tv", "episode", "season", "game", "fate", "champion",
+    "gudako", "protagonist", "video game", "cinematic", "film",
+    "hollywood", "bollywood", "sun tv", "serial", "star plus", "cast"
+}
+
+SCIENTIFIC_KEYWORDS = {
+    "study", "causes", "cure", "physics", "vaccine", "creatine",
+    "decay", "void", "clinical", "disease", "cancer", "quantum",
+    "cosmology", "dna", "cell", "supplement", "health", "astrophysics"
+}
+
+
+def select_engines(claim: str, mode: str = "deep") -> list[str]:
+    """Selects search engines based on claim domain, strictly suppressing scholar for pop culture."""
+    c_lower = claim.lower()
+
+    # Force organic + news for media/entertainment
+    if any(k in c_lower for k in POP_CULTURE_KEYWORDS):
+        return ["google"] if mode == "balanced" else ["google", "google_news"]
+
+    # Scientific / Medical / Academic
+    if any(k in c_lower for k in SCIENTIFIC_KEYWORDS):
+        return ["google", "google_scholar"] if mode != "balanced" else ["google_scholar", "google"]
+
+    # Default fallbacks
+    return ["google"] if mode == "balanced" else ["google", "google_news"]
+
+
+
 # ── Tiered Domain Authority Filter ──────────────────────────
 
 # Social forum & low-signal domains to drop completely
@@ -121,16 +189,25 @@ TIER_2_DOMAINS = {
 }
 
 
-def extract_clean_domain(link: str) -> str:
-    """Extracts a clean, canonical domain name from any URL, discarding breadcrumb/view noise."""
-    if not link:
+def extract_clean_domain(url: str) -> str:
+    """Extracts a clean hostname strictly from the full HTTP URL, discarding breadcrumb/view noise."""
+    if not url or not isinstance(url, str):
         return "web"
     try:
-        netloc = urlparse(link).netloc.lower()
+        # Strip any breadcrumb formatting if present
+        cleaned_url = url.split(" › ")[0].strip()
+        parsed = urlparse(cleaned_url)
+        netloc = parsed.netloc.lower()
+        if not netloc and parsed.path:
+            # Handle cases where URL lacked scheme
+            netloc = urlparse(f"https://{cleaned_url}").netloc.lower()
         if netloc.startswith("www."):
             netloc = netloc[4:]
         if ":" in netloc:
             netloc = netloc.split(":")[0]
+        # Guard against view/date strings that accidentally leaked into URL
+        if any(v in netloc for v in ("views", "ago", "month", "year")):
+            return "youtube.com"
         return netloc if netloc else "web"
     except Exception:
         return "web"
@@ -227,6 +304,25 @@ def extract_rich_metadata(raw_results: dict[str, Any]) -> dict[str, Any]:
         "knowledge_graph": kg_entity,
         "related_queries": related_queries,
     }
+
+
+def extract_serpapi_ai_overview(serp_payload: dict) -> str | None:
+    """Extracts Google's own AI Overview returned directly by SerpApi."""
+    if not isinstance(serp_payload, dict):
+        return None
+    ai_overview = serp_payload.get("ai_overview", {})
+    if not isinstance(ai_overview, dict):
+        return None
+    text_blocks = ai_overview.get("text_blocks", [])
+    snippets = [
+        b.get("snippet", "").strip()
+        for b in text_blocks
+        if isinstance(b, dict) and b.get("snippet")
+    ]
+    if not snippets and ai_overview.get("overview"):
+        snippets.append(str(ai_overview.get("overview")).strip())
+    return " ".join(snippets) if snippets else None
+
 
 
 def extract_snippets(raw_results: dict[str, Any], max_per_engine: int = 5) -> list[dict]:

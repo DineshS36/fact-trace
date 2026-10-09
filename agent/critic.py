@@ -78,16 +78,22 @@ TIER_2_DOMAINS = {
 }
 
 
-def extract_clean_domain(link: str) -> str:
-    """Extracts a clean, canonical host domain from any URL."""
-    if not link:
+def extract_clean_domain(url: str) -> str:
+    """Extracts a clean hostname strictly from the full HTTP URL, discarding breadcrumb/view noise."""
+    if not url or not isinstance(url, str):
         return "web"
     try:
-        netloc = urlparse(link).netloc.lower()
+        cleaned_url = url.split(" › ")[0].strip()
+        parsed = urlparse(cleaned_url)
+        netloc = parsed.netloc.lower()
+        if not netloc and parsed.path:
+            netloc = urlparse(f"https://{cleaned_url}").netloc.lower()
         if netloc.startswith("www."):
             netloc = netloc[4:]
         if ":" in netloc:
             netloc = netloc.split(":")[0]
+        if any(v in netloc for v in ("views", "ago", "month", "year")):
+            return "youtube.com"
         return netloc if netloc else "web"
     except Exception:
         return "web"
@@ -198,7 +204,8 @@ def enforce_domain_diversity(sources: list[dict], max_per_domain: int = 2) -> li
     domain_counts: dict[str, int] = {}
     diverse_sources: list[dict] = []
     for s in sources:
-        dom = s.get("source_domain", "") or extract_clean_domain(s.get("url", ""))
+        dom = extract_clean_domain(s.get("url", s.get("link", "")))
+        s["source_domain"] = dom
         current_count = domain_counts.get(dom, 0)
         if current_count < max_per_domain:
             diverse_sources.append(s)

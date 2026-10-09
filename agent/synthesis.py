@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .critic import CriticAuditReport, CuratedEvidence
-from .llm_client import call_llm
+from .llm_client import call_llm, clean_llm_json
 from .planner import Plan
 
 logger = logging.getLogger(__name__)
@@ -96,12 +96,9 @@ Return strictly JSON matching this schema:
 
         try:
             response = call_llm(prompt, response_mime_type="application/json")
-            cleaned = response.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1]
-            if cleaned.endswith("```"):
-                cleaned = cleaned.rsplit("```", 1)[0]
-            data = json.loads(cleaned.strip())
+            data = clean_llm_json(response)
+            if not isinstance(data, dict):
+                data = {}
 
             stances = {}
             for st_item in data.get("source_stances", []):
@@ -180,12 +177,9 @@ Return strictly JSON:
 
         try:
             resp = call_llm(prompt, response_mime_type="application/json")
-            cleaned = resp.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1]
-            if cleaned.endswith("```"):
-                cleaned = cleaned.rsplit("```", 1)[0]
-            parsed = json.loads(cleaned.strip())
+            parsed = clean_llm_json(resp)
+            if not isinstance(parsed, dict):
+                parsed = {}
         except Exception as exc:
             logger.error("Error in follow-up synthesis: %s", exc)
             parsed = {

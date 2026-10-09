@@ -5,8 +5,10 @@ Provides a unified interface with automatic model failover across
 Google Gemini, OpenAI, and Groq.
 """
 
+import json
 import logging
 import os
+import re
 from typing import Any
 
 from dotenv import load_dotenv
@@ -127,3 +129,40 @@ def call_llm(
     raise RuntimeError(
         f"Unsupported LLM_PROVIDER='{provider}'. Use 'openai', 'groq', or 'gemini'."
     )
+
+
+def clean_llm_json(raw_text: str) -> Any:
+    """
+    Safely extracts JSON (dict or list) from LLM output even if wrapped
+    in markdown code fences (```json ... ```) or conversational commentary.
+    """
+    if not raw_text or not isinstance(raw_text, str):
+        return {}
+
+    # Strip markdown code blocks
+    cleaned = re.sub(r"^```(?:json)?\s*", "", raw_text.strip(), flags=re.MULTILINE)
+    cleaned = re.sub(r"\s*```$", "", cleaned, flags=re.MULTILINE).strip()
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback 1: Extract outermost JSON object {...}
+    obj_match = re.search(r"(\{.*\})", cleaned, re.DOTALL)
+    if obj_match:
+        try:
+            return json.loads(obj_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback 2: Extract outermost JSON array [...]
+    arr_match = re.search(r"(\[.*\])", cleaned, re.DOTALL)
+    if arr_match:
+        try:
+            return json.loads(arr_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    raise json.JSONDecodeError("Failed to parse valid JSON from LLM output", cleaned, 0)
+

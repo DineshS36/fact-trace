@@ -15,9 +15,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .critic import CriticAuditReport, EpistemicCriticAgent
-from .llm_client import call_llm
+from .llm_client import call_llm, clean_llm_json
 from .planner import Plan, PlannerAgent
 from .retrieval import RetrievalAgent
+from .search_tools import POP_CULTURE_KEYWORDS, extract_serpapi_ai_overview, select_engines
 from .synthesis import SynthesisAgent
 from .telemetry import AgentTelemetry
 
@@ -91,6 +92,7 @@ class VerificationResult(BaseModel):
     credit_mode: str = "balanced"
     telemetry: dict[str, Any] = Field(default_factory=dict)
     raw_serpapi_payload: dict[str, Any] = Field(default_factory=dict)
+    serpapi_ai_overview: str | None = None
 
 
 # Backward-compatible LLM caller
@@ -226,6 +228,7 @@ class FactVerifier:
             credit_mode=credit_mode,
             telemetry=telemetry.to_dict(),
             raw_serpapi_payload=raw_bundle.raw_serpapi_payload,
+            serpapi_ai_overview=raw_bundle.serpapi_ai_overview,
         )
 
 
@@ -317,6 +320,7 @@ def verify_claim(claim: str, credit_mode: str = "balanced") -> dict[str, Any]:
         "credit_mode": res.credit_mode,
         "telemetry": res.telemetry,
         "raw_serpapi_payload": res.raw_serpapi_payload,
+        "serpapi_ai_overview": res.serpapi_ai_overview,
         "search_queries_used": res.search_queries_used,
         "sources": [
             {
