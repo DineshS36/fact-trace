@@ -4,8 +4,9 @@ FactTrace Epistemic Orchestrator
 Orchestrates the 4 specialized agents:
 1. Planner Agent        → Deconstructs claim, extracts core concepts, generates 3 isolated operator queries.
 2. Retrieval Agent      → Executes discrete queries across surfaces via Zero-Burn SQLite Cache.
-3. Epistemic Critic     → Purges CAPTCHAs, journal ads, and off-topic .gov pages; ranks via hybrid scoring.
+3. Epistemic Critic     → Purges dead videos, CAPTCHAs, journal ads; enforces domain diversity & hybrid ranking.
 4. Synthesis Agent      → Synthesizes calibrated AI Overview with bracketed citations ([1], [2]).
+Equipped with AgentTelemetry for stage latency tracking and raw SerpApi payload inspection.
 """
 
 import logging
@@ -18,6 +19,7 @@ from .llm_client import call_llm
 from .planner import Plan, PlannerAgent
 from .retrieval import RetrievalAgent
 from .synthesis import SynthesisAgent
+from .telemetry import AgentTelemetry
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,8 @@ class VerificationResult(BaseModel):
     purged_sources_count: int = 0
     purged_reasons: dict[str, int] = Field(default_factory=dict)
     credit_mode: str = "balanced"
+    telemetry: dict[str, Any] = Field(default_factory=dict)
+    raw_serpapi_payload: dict[str, Any] = Field(default_factory=dict)
 
 
 # Backward-compatible LLM caller
@@ -113,41 +117,50 @@ class FactVerifier:
     def __init__(self, max_snippets_per_engine: int = 5):
         self.planner = PlannerAgent()
         self.retriever = RetrievalAgent(max_snippets_per_call=max_snippets_per_engine)
-        self.critic = EpistemicCriticAgent(min_relevance_threshold=0.20, top_k=7)
+        self.critic = EpistemicCriticAgent(min_relevance_threshold=0.20, top_k=7, max_per_domain=2)
         self.synthesizer = SynthesisAgent()
 
     def verify(self, claim: str, credit_mode: str = "balanced") -> VerificationResult:
         """
-        Execute the full 4-stage multi-agent verification pipeline:
+        Execute the full 4-stage multi-agent verification pipeline with telemetry tracking:
         1. Planner Agent    → Deconstructs claim into 3 distinct operator queries and concepts.
         2. Retrieval Agent  → Gathers raw multi-surface evidence via Zero-Burn Cache.
-        3. Critic Agent     → Purges CAPTCHAs, off-topic .gov pages, computes hybrid ranking.
+        3. Critic Agent     → Purges dead videos, CAPTCHAs, enforces domain diversity & hybrid ranking.
         4. Synthesis Agent  → Generates Google AI Overview with bracketed citations [1], [2].
         """
+        telemetry = AgentTelemetry()
         logger.info("Initiating Epistemic Audit for claim: '%s' (mode=%s)", claim, credit_mode)
 
         # Stage 1: Planning
+        telemetry.start("planner")
         plan: Plan = self.planner.plan(claim)
+        telemetry.stop("planner")
         logger.info("Planner generated 3 distinct queries: %s", plan.queries)
 
         # Stage 2: Retrieval
+        telemetry.start("retrieval")
         raw_bundle = self.retriever.retrieve(plan, credit_mode=credit_mode)
+        telemetry.stop("retrieval")
         logger.info(
             "Retriever collected %d raw snippets across engines: %s",
             len(raw_bundle.raw_snippets),
             raw_bundle.engines_used,
         )
 
-        # Stage 3: Epistemic Criticism (Purge + Hybrid Ranking)
+        # Stage 3: Epistemic Criticism (Dead-video/CAPTCHA Purge + Domain Diversity + Hybrid Ranking)
+        telemetry.start("critic")
         critic_report: CriticAuditReport = self.critic.audit(raw_bundle, plan)
+        telemetry.stop("critic")
         logger.info(
-            "Critic approved %d sources (purged %d noisy/CAPTCHA/off-topic items)",
+            "Critic approved %d sources (purged %d noisy/CAPTCHA/off-topic/duplicate items)",
             len(critic_report.curated_evidence),
             critic_report.purged_count,
         )
 
         # Stage 4: Synthesis
+        telemetry.start("synthesis")
         synthesis = self.synthesizer.synthesize(claim, plan, critic_report)
+        telemetry.stop("synthesis")
 
         # Knowledge Graph conversion
         kg_data = None
@@ -211,6 +224,8 @@ class FactVerifier:
             purged_sources_count=critic_report.purged_count,
             purged_reasons=critic_report.purged_reasons,
             credit_mode=credit_mode,
+            telemetry=telemetry.to_dict(),
+            raw_serpapi_payload=raw_bundle.raw_serpapi_payload,
         )
 
 
@@ -300,6 +315,8 @@ def verify_claim(claim: str, credit_mode: str = "balanced") -> dict[str, Any]:
         "purged_sources_count": res.purged_sources_count,
         "purged_reasons": res.purged_reasons,
         "credit_mode": res.credit_mode,
+        "telemetry": res.telemetry,
+        "raw_serpapi_payload": res.raw_serpapi_payload,
         "search_queries_used": res.search_queries_used,
         "sources": [
             {

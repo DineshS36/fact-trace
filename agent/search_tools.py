@@ -121,6 +121,21 @@ TIER_2_DOMAINS = {
 }
 
 
+def extract_clean_domain(link: str) -> str:
+    """Extracts a clean, canonical domain name from any URL, discarding breadcrumb/view noise."""
+    if not link:
+        return "web"
+    try:
+        netloc = urlparse(link).netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        if ":" in netloc:
+            netloc = netloc.split(":")[0]
+        return netloc if netloc else "web"
+    except Exception:
+        return "web"
+
+
 def calculate_domain_authority(url: str, is_scholar: bool = False) -> tuple[int, str]:
     """Returns (tier_score: 1-3, label: 'High' | 'Medium' | 'Low')."""
     if not url:
@@ -230,13 +245,14 @@ def extract_snippets(raw_results: dict[str, Any], max_per_engine: int = 5) -> li
         is_scholar=False,
     )
     for item in organic_items:
+        link_url = item.get("link", "")
         snippets.append({
             "source_engine": "google",
             "title": item.get("title", ""),
             "snippet": item.get("snippet", ""),
-            "link": item.get("link", ""),
+            "link": link_url,
             "date": item.get("date", "Unknown date"),
-            "source_domain": item.get("displayed_link", item.get("source", "")),
+            "source_domain": extract_clean_domain(link_url),
             "authority_tier": item.get("authority_tier", 3),
             "authority_label": item.get("authority_label", "Standard Web"),
             "highlighted_words": item.get("snippet_highlighted_words", []),
@@ -250,13 +266,14 @@ def extract_snippets(raw_results: dict[str, Any], max_per_engine: int = 5) -> li
         is_scholar=False,
     )
     for item in news_items:
+        link_url = item.get("link", "")
         snippets.append({
             "source_engine": "google_news",
             "title": item.get("title", ""),
             "snippet": item.get("snippet", ""),
-            "link": item.get("link", ""),
+            "link": link_url,
             "date": item.get("date", "Recent"),
-            "source_domain": item.get("source", {}).get("name", "") if isinstance(item.get("source"), dict) else item.get("source", ""),
+            "source_domain": extract_clean_domain(link_url),
             "authority_tier": item.get("authority_tier", 3),
             "authority_label": item.get("authority_label", "Standard Web"),
             "highlighted_words": item.get("snippet_highlighted_words", []),

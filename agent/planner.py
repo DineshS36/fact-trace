@@ -4,6 +4,7 @@ Planner Agent
 Deconstructs natural language claims into categorized epistemological plans,
 extracts core semantic concepts, and generates 3 strictly separated,
 operator-injected queries (preventing query concatenation).
+Equipped with temporal and entertainment heuristics to avoid stale Wikipedia queries.
 """
 
 import json
@@ -15,6 +16,16 @@ from pydantic import BaseModel, Field
 from .llm_client import call_llm
 
 logger = logging.getLogger(__name__)
+
+TEMPORAL_MARKERS = [
+    "right now", "today", "current episode", "latest", "recent", "now",
+    "yesterday", "this week", "live", "ongoing", "currently"
+]
+
+ENTERTAINMENT_MARKERS = [
+    "serial", "episode", "season", "cast", "plot", "character", "movie",
+    "cinema", "tv show", "sun tv", "star plus", "actor", "actress", "who is helping"
+]
 
 
 class Plan(BaseModel):
@@ -32,6 +43,7 @@ class Plan(BaseModel):
         max_length=3,
     )
     target_surfaces: list[str] = Field(default_factory=lambda: ["google", "google_scholar"])
+    is_temporal: bool = False
 
 
 def classify_claim_type_heuristic(claim: str) -> str:
@@ -49,7 +61,7 @@ def classify_claim_type_heuristic(claim: str) -> str:
         "launched", "released", "announced", "2024", "2025", "2026", "yesterday",
         "last month", "recently", "sora", "openai", "acquisition", "died", "resigned",
         "war", "election", "bose", "crash"
-    ]):
+    ] + TEMPORAL_MARKERS + ENTERTAINMENT_MARKERS):
         return "temporal_news"
 
     if any(k in c for k in ["pricing", "cost", "features", "saas", "api", "subscription"]):
@@ -81,21 +93,37 @@ class PlannerAgent:
         Deconstruct claim and return a validated Plan.
         Guarantees that queries are 3 separate bounded strings and never concatenated.
         """
-        heuristic_type = classify_claim_type_heuristic(claim)
+        c_lower = claim.lower()
+        is_temporal = any(m in c_lower for m in TEMPORAL_MARKERS)
+        is_entertainment = any(m in c_lower for m in ENTERTAINMENT_MARKERS)
+
+        heuristic_type = "temporal_news" if (is_temporal or is_entertainment) else classify_claim_type_heuristic(claim)
         heuristic_terms = extract_core_terms_heuristic(claim)
+
+        temporal_instruction = ""
+        if is_temporal or is_entertainment:
+            temporal_instruction = """
+SPECIAL TEMPORAL / ENTERTAINMENT RULE:
+This query asks about ongoing serialized media, daily plot developments, or real-time events.
+- Do NOT restrict queries to site:wikipedia.org (which only hosts static cast tables).
+- Route queries toward episode recaps, character plot developments, or entertainment databases:
+  e.g. "{claim} today episode recap supporting character"
+  e.g. "{claim} full cast characters"
+"""
 
         prompt = f"""You are the Planner Agent in an Epistemic Fact-Verification system.
 
 Analyze this claim and create a high-precision search plan.
 
 CLAIM: "{claim}"
+{temporal_instruction}
 
 TASK:
 1. Classify the claim type ("scientific" | "temporal_news" | "commercial_saas" | "general_factoid").
 2. Identify 3 to 5 core conceptual terms or entities crucial for topic relevance.
 3. Generate EXACTLY 3 distinct, non-overlapping Google search queries:
-   - Query 1 (Academic / Primary Authority): Targeted terminology, site operator or official release.
-   - Query 2 (Consensus / Meta-Analysis): Consensus phrasing or systematic synthesis.
+   - Query 1 (Primary Authority / Direct Entity): Targeted terminology or official record.
+   - Query 2 (Consensus / Synthesis / Recap): Consensus phrasing or episode/development recap.
    - Query 3 (Counter-Hypothesis / Myth Origin): Origin of misconception, debunking, or counter-evidence.
 
 IMPORTANT CONSTRAINTS:
@@ -123,6 +151,9 @@ IMPORTANT CONSTRAINTS:
             data = json.loads(cleaned.strip())
 
             claim_type = str(data.get("claim_type", heuristic_type)).lower()
+            if is_temporal or is_entertainment:
+                claim_type = "temporal_news"
+
             raw_concepts = data.get("core_concepts", [])
             core_concepts = [str(c).strip().lower() for c in raw_concepts if str(c).strip()]
             if not core_concepts:
@@ -135,9 +166,12 @@ IMPORTANT CONSTRAINTS:
             if isinstance(raw_queries, list):
                 for q in raw_queries:
                     q_str = str(q).strip().replace("\n", " ")
-                    # Guard against query concatenation bug: if query is excessively long, truncate or split
+                    # Guard against Wikipedia lock on real-time queries
+                    if (is_temporal or is_entertainment) and "site:wikipedia.org" in q_str:
+                        q_str = q_str.replace("site:wikipedia.org", "").strip()
+
+                    # Guard against query concatenation bug
                     if len(q_str) > 130 and "site:" in q_str:
-                        # Extract first coherent query chunk
                         parts = re.split(r"(?<=[a-zA-Z0-9])\s+(?=site:)", q_str)
                         for p in parts:
                             if p.strip() and len(sanitized_queries) < 3:
@@ -145,7 +179,6 @@ IMPORTANT CONSTRAINTS:
                     elif q_str:
                         sanitized_queries.append(q_str)
 
-            # Ensure we have at least 1 and at most 3 distinct queries
             valid_queries = []
             for q in sanitized_queries:
                 if q not in valid_queries:
@@ -154,14 +187,24 @@ IMPORTANT CONSTRAINTS:
                     break
 
             if not valid_queries:
-                valid_queries = [
-                    f"{' '.join(core_concepts[:3])} official analysis",
-                    f"{' '.join(core_concepts[:3])} scientific consensus",
-                    f"{' '.join(core_concepts[:3])} debunked myth origin",
-                ]
+                if is_temporal or is_entertainment:
+                    valid_queries = [
+                        f"{' '.join(core_concepts[:3])} latest episode recap",
+                        f"{' '.join(core_concepts[:3])} character cast details",
+                        f"{' '.join(core_concepts[:3])} news update",
+                    ]
+                else:
+                    valid_queries = [
+                        f"{' '.join(core_concepts[:3])} official analysis",
+                        f"{' '.join(core_concepts[:3])} scientific consensus",
+                        f"{' '.join(core_concepts[:3])} debunked myth origin",
+                    ]
 
-            # Determine target surfaces based on claim type
-            surfaces = ["google", "google_scholar"] if claim_type == "scientific" else ["google", "google_news"]
+            # Determine target surfaces
+            if is_temporal or is_entertainment or claim_type in ("temporal_news", "commercial_saas"):
+                surfaces = ["google", "google_news"]
+            else:
+                surfaces = ["google", "google_scholar"]
 
             return Plan(
                 claim=claim,
@@ -169,21 +212,32 @@ IMPORTANT CONSTRAINTS:
                 core_concepts=core_concepts,
                 queries=valid_queries[:3],
                 target_surfaces=surfaces,
+                is_temporal=(is_temporal or is_entertainment),
             )
 
         except Exception as exc:
             logger.warning("PlannerAgent encountered error (%s), using deterministic plan", exc)
             fallback_concepts = heuristic_terms
-            fallback_queries = [
-                f"{' '.join(fallback_concepts[:3])} primary review",
-                f"{' '.join(fallback_concepts[:3])} scientific consensus",
-                f"{' '.join(fallback_concepts[:3])} debunked origin",
-            ]
-            surfaces = ["google", "google_scholar"] if heuristic_type == "scientific" else ["google", "google_news"]
+            if is_temporal or is_entertainment:
+                fallback_queries = [
+                    f"{' '.join(fallback_concepts[:3])} today episode recap",
+                    f"{' '.join(fallback_concepts[:3])} character cast details",
+                    f"{' '.join(fallback_concepts[:3])} news update",
+                ]
+                surfaces = ["google", "google_news"]
+            else:
+                fallback_queries = [
+                    f"{' '.join(fallback_concepts[:3])} primary review",
+                    f"{' '.join(fallback_concepts[:3])} scientific consensus",
+                    f"{' '.join(fallback_concepts[:3])} debunked origin",
+                ]
+                surfaces = ["google", "google_scholar"] if heuristic_type == "scientific" else ["google", "google_news"]
+
             return Plan(
                 claim=claim,
                 claim_type=heuristic_type,
                 core_concepts=fallback_concepts,
                 queries=fallback_queries,
                 target_surfaces=surfaces,
+                is_temporal=(is_temporal or is_entertainment),
             )

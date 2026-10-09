@@ -4,10 +4,11 @@ FactTrace — Epistemic Audit Multi-Agent Dashboard
 High-density Streamlit UI demonstrating an autonomous 4-stage Multi-Agent
 architecture (Planner ➔ Retrieval ➔ Critic ➔ Synthesis) powered by
 SerpApi and Gemini with semantic relevance gating, CAPTCHA purging,
-and grounded inline citations.
+domain diversity capping, telemetry breakdown, and raw SerpApi inspector.
 """
 
 import logging
+import time
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -122,14 +123,14 @@ if "current_result" not in st.session_state:
     st.session_state.current_result = None
 
 benchmarks = {
+    "kayal": "who is helping Kayal right now in Sun TV serial",
     "void": "is the void will kill us what happened when it touch our earth",
     "creatine": "High-dose creatine supplementation directly causes hair loss in healthy athletes.",
     "sora": "OpenAI launched Sora publicly to all free users in early 2024.",
-    "space_pen": "NASA spent millions developing a space pen while the Soviets just used a pencil.",
 }
 
 if "input_claim" not in st.session_state:
-    st.session_state["input_claim"] = benchmarks["void"]
+    st.session_state["input_claim"] = benchmarks["kayal"]
 
 # ── Header ──────────────────────────────────────────────────
 
@@ -154,10 +155,10 @@ with col_stats:
 st.markdown(
     """
     <div class="agent-pipeline-bar">
-        <div class="agent-step">1️⃣ Planner Agent (Decomposition & DAG)</div>
-        <div class="agent-step">2️⃣ Retrieval Agent (Cached SerpApi)</div>
-        <div class="agent-step">3️⃣ Critic Agent (Relevance Gate & CAPTCHA Purge)</div>
-        <div class="agent-step">4️⃣ Synthesis Agent (AI Overview & [1] Citations)</div>
+        <div class="agent-step">1️⃣ Planner Agent (Decomposition & Recency Heuristic)</div>
+        <div class="agent-step">2️⃣ Retrieval Agent (Cached SerpApi & Payload Store)</div>
+        <div class="agent-step">3️⃣ Critic Agent (Domain Diversity Cap & Anti-Scraping Purge)</div>
+        <div class="agent-step">4️⃣ Synthesis Agent (AI Overview & Grounded [1] Citations)</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -169,26 +170,26 @@ st.markdown("##### ⚡ Benchmark Demonstration Claims")
 b1, b2, b3, b4 = st.columns(4)
 
 with b1:
-    if st.button("🌌 Test Query: False Vacuum Decay", use_container_width=True):
-        st.session_state["input_claim"] = benchmarks["void"]
+    if st.button("📺 Serial: Kayal Sun TV Current Plot", use_container_width=True):
+        st.session_state["input_claim"] = benchmarks["kayal"]
         st.session_state.current_result = None
         st.session_state.audit_history = []
         st.rerun()
 with b2:
-    if st.button("🔬 Optimal Demo: Creatine & Hair Loss", use_container_width=True):
-        st.session_state["input_claim"] = benchmarks["creatine"]
+    if st.button("🌌 Physics: False Vacuum Decay", use_container_width=True):
+        st.session_state["input_claim"] = benchmarks["void"]
         st.session_state.current_result = None
         st.session_state.audit_history = []
         st.rerun()
 with b3:
-    if st.button("⏱️ Temporal: OpenAI Sora 2024", use_container_width=True):
-        st.session_state["input_claim"] = benchmarks["sora"]
+    if st.button("🔬 Optimal: Creatine & Hair Loss", use_container_width=True):
+        st.session_state["input_claim"] = benchmarks["creatine"]
         st.session_state.current_result = None
         st.session_state.audit_history = []
         st.rerun()
 with b4:
-    if st.button("🚀 Attribution: NASA Space Pen", use_container_width=True):
-        st.session_state["input_claim"] = benchmarks["space_pen"]
+    if st.button("⏱️ Temporal: OpenAI Sora 2024", use_container_width=True):
+        st.session_state["input_claim"] = benchmarks["sora"]
         st.session_state.current_result = None
         st.session_state.audit_history = []
         st.rerun()
@@ -198,7 +199,7 @@ with b4:
 claim = st.text_input(
     "Enter a claim to investigate:",
     value=st.session_state["input_claim"],
-    placeholder="e.g., is the void will kill us what happened when it touch our earth",
+    placeholder="e.g., who is helping Kayal right now in Sun TV serial",
 )
 
 col_ctrl1, col_ctrl2 = st.columns([1.5, 3.5])
@@ -249,8 +250,10 @@ if result:
 
         # Critic Agent Purge Stats
         purged_count = result.get("purged_sources_count", 0)
+        reasons = result.get("purged_reasons", {})
+        reasons_text = f" (Purged: {reasons})" if reasons else ""
         st.markdown(
-            f"""<div class="critic-badge">🛡️ Critic Agent: Purged {purged_count} off-topic/CAPTCHA items</div>""",
+            f"""<div class="critic-badge">🛡️ Critic Agent: Purged {purged_count} noisy/duplicate items</div>""",
             unsafe_allow_html=True,
         )
 
@@ -263,7 +266,7 @@ if result:
         planner_queries = result.get("search_queries_used", [])
         if planner_queries:
             with st.expander(f"🔍 Planner Agent: {len(planner_queries)} Isolated Queries"):
-                labels = ["Academic Primary", "Consensus Meta", "Counter-Hypothesis / Myth"]
+                labels = ["Primary Authority", "Consensus / Recap", "Counter-Hypothesis / Myth"]
                 for i, q in enumerate(planner_queries):
                     label = labels[i] if i < len(labels) else f"Query {i+1}"
                     st.caption(f"**Query {i+1} ({label}):**")
@@ -306,11 +309,21 @@ if result:
             for rq in related[:2]:
                 st.markdown(f"- *{rq}*")
 
+    # ── Production Telemetry Bar ────────────────────────────
+    telemetry = result.get("telemetry", {})
+    if telemetry:
+        st.markdown("##### ⏱️ Agent Telemetry & Stage Latency Breakdown")
+        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+        col_t1.metric("⚡ Total Latency", f"{telemetry.get('total_latency', 0.0):.2f}s")
+        col_t2.metric("🧠 Planner Latency", f"{telemetry.get('planner_latency', 0.0):.2f}s")
+        col_t3.metric("🌐 SerpApi Dispatch", f"{telemetry.get('retrieval_latency', 0.0):.2f}s")
+        col_t4.metric("🛡️ Critic & Synthesis", f"{(telemetry.get('critic_latency', 0.0) + telemetry.get('synthesis_latency', 0.0)):.2f}s")
+
     st.divider()
 
     # ── Grounded Evidence Matrix ────────────────────────────
     st.markdown("### 📚 Grounded Evidence Matrix (Critic-Audited)")
-    st.caption("Purged of scraper traps, CAPTCHAs, journal ads, and off-topic .gov pages. Ranked via Hybrid Score (70% Topical Relevance + 30% Domain Authority).")
+    st.caption("Clean host domains, duplicate-capped (max 2/domain), and ranked via Hybrid Score (70% Topical Relevance + 30% Domain Authority).")
 
     sources = result.get("sources", [])
     if not sources:
@@ -329,15 +342,13 @@ if result:
             status_icon = "🟩" if stance == "supports" else "🟥" if stance == "refutes" else "🟨"
             engine_name = src.get("engine", "google")
             pub_date = src.get("date", "N/A")
-            domain_name = src.get("domain", "")
+            clean_dom = src.get("domain", "web")
             rel_score = src.get("relevance_score", 0.0)
 
             with st.expander(f"[{src.get('index', idx)}] {status_icon} {src.get('title', 'Source')} — {tier_badge}"):
-                domain_str = f" | Domain: `{domain_name}`" if domain_name else ""
-                st.write(f"**Authority:** {src.get('authority_label', 'Standard')}")
                 st.caption(
-                    f"Engine: `{engine_name}` | Published: {pub_date}{domain_str} | "
-                    f"Stance: `{stance.capitalize()}` | Relevance: `{rel_score*100:.0f}%`"
+                    f"**Host Domain:** `{clean_dom}` | **Engine:** `{engine_name}` | "
+                    f"**Published:** {pub_date} | **Stance:** `{stance.capitalize()}` | **Relevance:** `{rel_score*100:.0f}%`"
                 )
                 st.write(f"**Verified Excerpt:** {src.get('snippet')}")
 
@@ -346,7 +357,48 @@ if result:
                     kw_html = " ".join([f'<span class="kw-tag">{w}</span>' for w in hw[:5]])
                     st.markdown(f"**SerpApi Matches:** {kw_html}", unsafe_allow_html=True)
 
-                st.markdown(f"🔗 [Inspect Raw URL]({src.get('link')})")
+                st.markdown(f"🔗 [Inspect Direct URL]({src.get('link')})")
+
+    # ── SerpApi Developer Inspector Drawer & Dossier Export ──
+    st.divider()
+    col_dossier, col_export = st.columns([2, 1])
+
+    with col_dossier:
+        with st.expander("🛠️ Developer Mode: Inspect Raw SerpApi JSON Payload"):
+            st.caption("Inspect live structured responses returned from SerpApi engines:")
+            raw_payload = result.get("raw_serpapi_payload", {})
+            if raw_payload:
+                st.json(raw_payload)
+            else:
+                st.info("No raw SerpApi payload captured for this run.")
+
+    with col_export:
+        def generate_markdown_report(res: dict) -> str:
+            md = f"# FactTrace Epistemic Audit Report\n\n"
+            md += f"**Claim:** {res['claim']}\n\n"
+            md += f"**Verdict:** {res['verdict']} | **Confidence:** {res['confidence']*100:.1f}%\n\n"
+            if res.get("consensus_summary"):
+                md += f"**Empirical Consensus:** {res['consensus_summary']}\n\n"
+            md += f"## Executive Analysis\n{res['executive_overview']}\n\n"
+            md += f"## Evidence Citations\n"
+            for i, s in enumerate(res.get('sources', []), 1):
+                md += f"- **[{i}] {s['title']}** (`{s['domain']}`) - *{s['stance']}* (Relevance: {s.get('relevance_score', 0)*100:.0f}%)\n  {s['link']}\n"
+            if res.get("search_queries_used"):
+                md += f"\n## Injected Search Operators\n"
+                for q in res["search_queries_used"]:
+                    md += f"- `{q}`\n"
+            telem = res.get("telemetry", {})
+            if telem:
+                md += f"\n## Telemetry\n- Total Latency: {telem.get('total_latency')}s\n- Planner: {telem.get('planner_latency')}s\n- Retrieval: {telem.get('retrieval_latency')}s\n"
+            return md
+
+        st.download_button(
+            label="📥 Export Audit Dossier (.md)",
+            data=generate_markdown_report(result),
+            file_name=f"facttrace_audit_{int(time.time())}.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
 
     # ── Conversational Follow-up History ────────────────────
     if st.session_state.audit_history:
@@ -378,14 +430,14 @@ if result:
                     with st.expander(f"Inspect {len(turn['sources'])} Follow-up Grounding Sources"):
                         for f_idx, f_src in enumerate(turn["sources"], 1):
                             st.markdown(
-                                f"**[{f_src.get('index', f_idx)}] {f_src.get('title')}** ({f_src.get('authority_label')})\n\n"
+                                f"**[{f_src.get('index', f_idx)}] {f_src.get('title')}** (`{f_src.get('domain', 'web')}`)\n\n"
                                 f"*{f_src.get('snippet')}*\n\n"
-                                f"[Inspect Link]({f_src.get('link')})\n"
+                                f"[Inspect Direct Link]({f_src.get('link')})\n"
                             )
 
     # ── Google AI Mode Follow-up Bar ────────────────────────
     st.divider()
-    follow_up = st.chat_input("Ask a follow-up or challenge this audit (e.g. 'Could cosmic voids collide with Earth?')...")
+    follow_up = st.chat_input("Ask a follow-up or challenge this audit (e.g. 'Who is the main antagonist in this episode?')...")
     if follow_up:
         with st.spinner(f"Investigating follow-up: '{follow_up}' in context of previous audit..."):
             follow_up_res = verify_follow_up(

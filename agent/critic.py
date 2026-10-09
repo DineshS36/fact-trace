@@ -1,9 +1,11 @@
 """
 Epistemic Critic Agent
 ======================
-Protects the evidence stream from the "Domain Authority Trap", purging CAPTCHAs,
-academic journal ads, cookie walls, and off-topic high-authority domains (e.g. NOAA
-marine mammal reports on physics queries). Implements hybrid relevance-authority ranking.
+Protects the evidence stream from visible scraping flaws:
+1. Dead video embeds & trash placeholders ("Video unavailable", "404 Not Found", CAPTCHAs).
+2. Domain Monopolization & Duplicate Flooding via Domain Diversity Capping (max 2 per domain).
+3. Off-topic domain authority traps (e.g. NOAA marine quotas for physics).
+4. Cleans raw breadcrumbs into canonical host domains.
 """
 
 import logging
@@ -17,15 +19,22 @@ from .retrieval import RawEvidenceBundle
 
 logger = logging.getLogger(__name__)
 
-# ── Boilerplate, CAPTCHA, and Marketing Patterns to Purge ───
+# ── Boilerplate, CAPTCHA, and Dead-Video Blacklist ──────────
 
-BLOCKED_SNIPPET_PATTERNS = [
+TRASH_TITLES_AND_SNIPPETS = {
+    "video unavailable",
+    "private video",
+    "this video is unavailable",
     "javascript is disabled",
+    "please enable cookies",
+    "verify you are human",
     "verify that you're not a robot",
-    "enable javascript",
+    "page not found",
+    "404 not found",
+    "access denied",
     "access to this page has been denied",
-    "checking your browser",
     "security check to access",
+    "checking your browser",
     "cloudflare",
     "cookie policy",
     "terms of service",
@@ -42,7 +51,7 @@ BLOCKED_SNIPPET_PATTERNS = [
     "free online calculator",
     "free graphing calculator",
     "desmos",
-]
+}
 
 # Social / forum domains to drop completely
 BANNED_DOMAINS = {
@@ -67,6 +76,21 @@ TIER_2_DOMAINS = {
     "bbc.com", "nytimes.com", "washingtonpost.com", "wsj.com", "theguardian.com",
     "thehindu.com", "economist.com", "ft.com", "scientificamerican.com"
 }
+
+
+def extract_clean_domain(link: str) -> str:
+    """Extracts a clean, canonical host domain from any URL."""
+    if not link:
+        return "web"
+    try:
+        netloc = urlparse(link).netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        if ":" in netloc:
+            netloc = netloc.split(":")[0]
+        return netloc if netloc else "web"
+    except Exception:
+        return "web"
 
 
 class CuratedEvidence(BaseModel):
@@ -97,17 +121,17 @@ class CriticAuditReport(BaseModel):
 
 
 def is_valid_content(snippet: str, title: str, url: str) -> tuple[bool, str]:
-    """Check if content is genuine evidence or scraper-block/ad/banned domain."""
+    """Check if content is genuine evidence or trash/dead video/CAPTCHA."""
     url_lower = url.lower()
     if any(banned in url_lower for banned in BANNED_DOMAINS):
         return False, "banned_social_domain"
 
     combined = f"{title} {snippet}".lower()
-    for pat in BLOCKED_SNIPPET_PATTERNS:
-        if pat in combined:
-            return False, f"boilerplate_or_captcha: {pat}"
+    for trash in TRASH_TITLES_AND_SNIPPETS:
+        if trash in combined:
+            return False, f"trash_or_dead_embed: {trash}"
 
-    if len(snippet.strip()) < 20:
+    if len(snippet.strip()) < 15:
         return False, "insufficient_length"
 
     return True, "valid"
@@ -121,14 +145,7 @@ def calculate_domain_tier(url: str, is_scholar: bool = False) -> tuple[int, str,
     if not url:
         return (1, "Tier-1 Authoritative (Peer-Reviewed Scholar)", 1.0) if is_scholar else (3, "Standard Web", 0.35)
 
-    try:
-        domain = urlparse(url).netloc.lower()
-        if domain.startswith("www."):
-            domain = domain[4:]
-        if ":" in domain:
-            domain = domain.split(":")[0]
-    except Exception:
-        domain = ""
+    domain = extract_clean_domain(url)
 
     if (
         any(domain.endswith(t1) or domain == t1 for t1 in TIER_1_DOMAINS)
@@ -176,15 +193,29 @@ def calculate_relevance_score(snippet: str, title: str, core_concepts: list[str]
     return min(1.0, matched_concepts / max(len(core_concepts), 1))
 
 
+def enforce_domain_diversity(sources: list[dict], max_per_domain: int = 2) -> list[dict]:
+    """Limits results to at most max_per_domain per host domain to prevent flooding."""
+    domain_counts: dict[str, int] = {}
+    diverse_sources: list[dict] = []
+    for s in sources:
+        dom = s.get("source_domain", "") or extract_clean_domain(s.get("url", ""))
+        current_count = domain_counts.get(dom, 0)
+        if current_count < max_per_domain:
+            diverse_sources.append(s)
+            domain_counts[dom] = current_count + 1
+    return diverse_sources
+
+
 class EpistemicCriticAgent:
     """
     Filters out noise, evaluates topical relevance, applies domain authority weighting,
-    and resolves evidence conflicts.
+    purges dead embeds, and enforces domain diversity.
     """
 
-    def __init__(self, min_relevance_threshold: float = 0.20, top_k: int = 7):
+    def __init__(self, min_relevance_threshold: float = 0.20, top_k: int = 7, max_per_domain: int = 2):
         self.min_relevance = min_relevance_threshold
         self.top_k = top_k
+        self.max_per_domain = max_per_domain
 
     def audit(self, raw_bundle: RawEvidenceBundle, plan: Plan) -> CriticAuditReport:
         """
@@ -206,7 +237,7 @@ class EpistemicCriticAgent:
             title = raw_item.get("title", "")
             is_scholar = raw_item.get("source_engine") == "google_scholar"
 
-            # 1. Boilerplate & CAPTCHA Purge
+            # 1. Dead Video & Trash Placeholder Purge
             is_valid, reason = is_valid_content(snippet, title, url)
             if not is_valid:
                 purged_count += 1
@@ -221,8 +252,9 @@ class EpistemicCriticAgent:
                 purged_reasons[reason] = purged_reasons.get(reason, 0) + 1
                 continue
 
-            # 3. Domain Tier Calculation
+            # 3. Domain Tier & Canonical Host Calculation
             tier, label, auth_weight = calculate_domain_tier(url, is_scholar=is_scholar)
+            clean_dom = extract_clean_domain(url)
 
             # 4. Hybrid Scoring Formula: 70% Topical Relevance, 30% Domain Authority
             final_score = (rel_score * 0.70) + (auth_weight * 0.30)
@@ -233,7 +265,7 @@ class EpistemicCriticAgent:
                 "url": url,
                 "source_engine": raw_item.get("source_engine", "google"),
                 "date": raw_item.get("date", "Unknown date"),
-                "source_domain": raw_item.get("source_domain", ""),
+                "source_domain": clean_dom,
                 "authority_tier": tier,
                 "authority_label": label,
                 "relevance_score": round(rel_score, 3),
@@ -243,6 +275,13 @@ class EpistemicCriticAgent:
 
         # Sort primarily by hybrid final_score descending
         valid_candidates.sort(key=lambda x: x["final_score"], reverse=True)
+
+        # 5. Enforce Domain Diversity Cap (Max 2 results per domain to prevent YouTube flooding)
+        diverse_candidates = enforce_domain_diversity(valid_candidates, max_per_domain=self.max_per_domain)
+        if len(valid_candidates) > len(diverse_candidates):
+            domain_purged = len(valid_candidates) - len(diverse_candidates)
+            purged_count += domain_purged
+            purged_reasons["domain_diversity_cap_exceeded"] = domain_purged
 
         curated = [
             CuratedEvidence(
@@ -259,7 +298,7 @@ class EpistemicCriticAgent:
                 final_score=c["final_score"],
                 highlighted_words=c["highlighted_words"],
             )
-            for idx, c in enumerate(valid_candidates[:self.top_k], 1)
+            for idx, c in enumerate(diverse_candidates[:self.top_k], 1)
         ]
 
         logger.info(
